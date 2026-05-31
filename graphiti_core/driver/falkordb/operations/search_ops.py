@@ -31,7 +31,6 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.graph_queries import (
     get_nodes_query,
     get_relationships_query,
-    get_vector_cosine_func_query,
 )
 from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
 from graphiti_core.models.nodes.node_db_queries import (
@@ -184,24 +183,28 @@ class FalkorSearchOperations(SearchOperations):
             search_filter, GraphProvider.FALKORDB
         )
 
+        # The HNSW vector index cannot pre-filter, so we over-fetch candidates and
+        # filter afterwards. group_id is the tenant scope (one group per FalkorDB
+        # graph in this deployment) and removes nothing, so it does not require
+        # over-fetching; only real attribute filters do.
+        overfetch = limit if not filter_queries else min(limit * 10, 200)
+
         if group_ids is not None:
             filter_queries.append('n.group_id IN $group_ids')
             filter_params['group_ids'] = group_ids
 
-        filter_query = ''
-        if filter_queries:
-            filter_query = ' WHERE ' + (' AND '.join(filter_queries))
-
+        # FalkorDB vector KNN returns cosine *distance* (0 == identical), ordered
+        # ascending. Convert to the (2 - distance) / 2 similarity the rest of
+        # Graphiti expects so the min_score threshold keeps its meaning.
+        where_clauses = filter_queries + ['score > $min_score']
         cypher = (
-            'MATCH (n:Entity)'
-            + filter_query
+            "CALL db.idx.vector.queryNodes('Entity', 'name_embedding', "
+            f'{overfetch}, vecf32($search_vector)) YIELD node AS n, score'
             + """
-            WITH n, """
-            + get_vector_cosine_func_query(
-                'n.name_embedding', '$search_vector', GraphProvider.FALKORDB
-            )
-            + """ AS score
-            WHERE score > $min_score
+            WITH n, (2 - score) / 2 AS score
+            WHERE """
+            + ' AND '.join(where_clauses)
+            + """
             RETURN
             """
             + get_entity_node_return_query(GraphProvider.FALKORDB)
@@ -341,6 +344,7 @@ class FalkorSearchOperations(SearchOperations):
             search_filter, GraphProvider.FALKORDB
         )
 
+        endpoint_constrained = False
         if group_ids is not None:
             filter_queries.append('e.group_id IN $group_ids')
             filter_params['group_ids'] = group_ids
@@ -348,25 +352,35 @@ class FalkorSearchOperations(SearchOperations):
             if source_node_uuid is not None:
                 filter_params['source_uuid'] = source_node_uuid
                 filter_queries.append('n.uuid = $source_uuid')
+                endpoint_constrained = True
 
             if target_node_uuid is not None:
                 filter_params['target_uuid'] = target_node_uuid
                 filter_queries.append('m.uuid = $target_uuid')
+                endpoint_constrained = True
 
-        filter_query = ''
-        if filter_queries:
-            filter_query = ' WHERE ' + (' AND '.join(filter_queries))
+        # HNSW can't pre-filter: over-fetch candidates, then filter. Endpoint
+        # (source/target uuid) constraints are highly selective, so over-fetch
+        # aggressively in that case to preserve recall.
+        if endpoint_constrained:
+            overfetch = min(limit * 50, 1000)
+        elif filter_queries:
+            overfetch = min(limit * 10, 200)
+        else:
+            overfetch = limit
 
+        # FalkorDB vector KNN returns cosine *distance*; convert to the
+        # (2 - distance) / 2 similarity Graphiti expects so min_score is preserved.
+        where_clauses = filter_queries + ['score > $min_score']
         cypher = (
-            'MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)'
-            + filter_query
+            "CALL db.idx.vector.queryRelationships('RELATES_TO', 'fact_embedding', "
+            f'{overfetch}, vecf32($search_vector)) YIELD relationship AS rel, score'
             + """
-            WITH DISTINCT e, n, m, """
-            + get_vector_cosine_func_query(
-                'e.fact_embedding', '$search_vector', GraphProvider.FALKORDB
-            )
-            + """ AS score
-            WHERE score > $min_score
+            WITH rel, (2 - score) / 2 AS score
+            MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
+            WHERE """
+            + ' AND '.join(where_clauses)
+            + """
             RETURN
             """
             + get_entity_edge_return_query(GraphProvider.FALKORDB)
@@ -537,22 +551,20 @@ class FalkorSearchOperations(SearchOperations):
     ) -> list[CommunityNode]:
         query_params: dict[str, Any] = {}
 
-        group_filter_query = ''
+        where_clauses = ['score > $min_score']
         if group_ids is not None:
-            group_filter_query += ' WHERE c.group_id IN $group_ids'
+            where_clauses.insert(0, 'c.group_id IN $group_ids')
             query_params['group_ids'] = group_ids
 
+        # FalkorDB vector KNN returns cosine *distance*; convert to similarity.
         cypher = (
-            'MATCH (c:Community)'
-            + group_filter_query
+            "CALL db.idx.vector.queryNodes('Community', 'name_embedding', "
+            f'{limit}, vecf32($search_vector)) YIELD node AS c, score'
             + """
-            WITH c,
-            """
-            + get_vector_cosine_func_query(
-                'c.name_embedding', '$search_vector', GraphProvider.FALKORDB
-            )
-            + """ AS score
-            WHERE score > $min_score
+            WITH c, (2 - score) / 2 AS score
+            WHERE """
+            + ' AND '.join(where_clauses)
+            + """
             RETURN
             """
             + COMMUNITY_NODE_RETURN

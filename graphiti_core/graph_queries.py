@@ -9,6 +9,13 @@ from typing_extensions import LiteralString
 
 from graphiti_core.driver.driver import GraphProvider
 
+# Embedding dimension used when creating FalkorDB native vector (HNSW) indexes.
+# TODO(vector-index): hardcoded to match the deployed embedder (OpenAI
+# text-embedding-3-small = 1536). Thread the embedder's actual dimension through
+# build_indices_and_constraints instead of hardcoding before propagating this to
+# other providers/embedders. See migration/vector-index-decision.md.
+DEFAULT_EMBEDDING_DIM = 1536
+
 # Mapping from Neo4j fulltext index names to FalkorDB node labels
 NEO4J_TO_FALKORDB_MAPPING = {
     'node_name_and_summary': 'Entity',
@@ -138,6 +145,32 @@ def get_fulltext_indices(provider: GraphProvider) -> list[LiteralString]:
         """CREATE FULLTEXT INDEX edge_name_and_fact IF NOT EXISTS
         FOR ()-[e:RELATES_TO]-() ON EACH [e.name, e.fact, e.group_id]""",
     ]
+
+
+def get_vector_indices(provider: GraphProvider) -> list[LiteralString]:
+    """Native vector (HNSW) index creation statements.
+
+    Only FalkorDB is supported today; other providers return an empty list and keep
+    their existing brute-force cosine behavior unchanged. FalkorDB stores embeddings
+    as vecf32 (see node/edge SAVE queries), so these indexes attach to existing data
+    with no backfill. Syntax verified against falkordb-client 1.2.0 / FalkorDB graph
+    module 41808.
+    """
+    if provider == GraphProvider.FALKORDB:
+        from typing import cast
+
+        dim = DEFAULT_EMBEDDING_DIM
+        opts = f"OPTIONS {{dimension:{dim}, similarityFunction:'cosine'}}"
+        return cast(
+            list[LiteralString],
+            [
+                f'CREATE VECTOR INDEX FOR (e:Entity) ON (e.name_embedding) {opts}',
+                f'CREATE VECTOR INDEX FOR (e:Community) ON (e.name_embedding) {opts}',
+                f'CREATE VECTOR INDEX FOR ()-[e:RELATES_TO]->() ON (e.fact_embedding) {opts}',
+            ],
+        )
+
+    return []
 
 
 def get_nodes_query(name: str, query: str, limit: int, provider: GraphProvider) -> str:
