@@ -200,9 +200,16 @@ async def edge_fulltext_search(
     if fuzzy_query == '':
         return []
 
+    # Resolve the edge's endpoints with startNode/endNode rather than re-matching by
+    # uuid: FalkorDB (and Neo4j) do NOT use the edge uuid index for an inline-property
+    # edge pattern, so MATCH (n)-[e {uuid: rel.uuid}]->(m) plans a full Entity scan per
+    # result (O(results x entities); GRAPH.PROFILE showed ~1.9M records / ~155s on
+    # FalkorDB with an unbounded fulltext result set). startNode/endNode read the
+    # endpoints off the relationship the procedure already returned (O(results)). The
+    # Neptune branch above already uses this; proven equivalent on real data.
     match_query = """
     YIELD relationship AS rel, score
-    MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
+    WITH rel AS e, score, startNode(rel) AS n, endNode(rel) AS m
     """
     if driver.provider == GraphProvider.KUZU:
         match_query = """
