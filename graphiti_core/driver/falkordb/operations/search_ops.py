@@ -300,13 +300,19 @@ class FalkorSearchOperations(SearchOperations):
         if filter_queries:
             filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
+        # Resolve the edge's endpoints with startNode/endNode rather than re-matching
+        # MATCH (n)-[e {uuid: rel.uuid}]->(m): FalkorDB does NOT use the edge uuid index
+        # for an inline-property edge pattern, so the re-match plans a full Entity scan
+        # per result (O(results x entities); ~155s here). startNode/endNode read the
+        # endpoints off the relationship the proc already returned (O(results)) and are
+        # provably equivalent (startNode == source n, endNode == target m).
         cypher = (
             get_relationships_query(
                 'edge_name_and_fact', limit=limit, provider=GraphProvider.FALKORDB
             )
             + """
             YIELD relationship AS rel, score
-            MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
+            WITH rel AS e, score, startNode(rel) AS n, endNode(rel) AS m
             """
             + filter_query
             + """
@@ -371,13 +377,14 @@ class FalkorSearchOperations(SearchOperations):
 
         # FalkorDB vector KNN returns cosine *distance*; convert to the
         # (2 - distance) / 2 similarity Graphiti expects so min_score is preserved.
+        # Resolve endpoints with startNode/endNode (not a re-match by uuid, which would
+        # trigger a full Entity scan per result — see edge_fulltext_search).
         where_clauses = filter_queries + ['score > $min_score']
         cypher = (
             "CALL db.idx.vector.queryRelationships('RELATES_TO', 'fact_embedding', "
             f'{overfetch}, vecf32($search_vector)) YIELD relationship AS rel, score'
             + """
-            WITH rel, (2 - score) / 2 AS score
-            MATCH (n:Entity)-[e:RELATES_TO {uuid: rel.uuid}]->(m:Entity)
+            WITH rel AS e, (2 - score) / 2 AS score, startNode(rel) AS n, endNode(rel) AS m
             WHERE """
             + ' AND '.join(where_clauses)
             + """
