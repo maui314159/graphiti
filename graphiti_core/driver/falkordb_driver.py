@@ -72,6 +72,24 @@ from graphiti_core.utils.datetime_utils import convert_datetimes_to_strings
 logger = logging.getLogger(__name__)
 
 
+def _strip_null_bytes(obj):
+    """Recursively remove NUL (\\x00) from string values in query params.
+
+    FalkorDB string properties cannot contain NUL, and the falkordb client's
+    param serializer does not escape it, so a NUL embedded in episode content
+    (common in PPTX/PDF text extraction) makes FalkorDB reject the entire query
+    with "Failed to parse query parameter '<name>' value". Stripping it is safe —
+    NUL is never meaningful in graph text.
+    """
+    if isinstance(obj, str):
+        return obj.replace('\x00', '') if '\x00' in obj else obj
+    if isinstance(obj, dict):
+        return {k: _strip_null_bytes(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_strip_null_bytes(v) for v in obj)
+    return obj
+
+
 class FalkorDriverSession(GraphDriverSession):
     provider = GraphProvider.FALKORDB
 
@@ -97,11 +115,11 @@ class FalkorDriverSession(GraphDriverSession):
         # FalkorDB does not support argument for Label Set, so it's converted into an array of queries
         if isinstance(query, list):
             for cypher, params in query:
-                params = convert_datetimes_to_strings(params)
+                params = _strip_null_bytes(convert_datetimes_to_strings(params))
                 await self.graph.query(str(cypher), params)  # type: ignore[reportUnknownArgumentType]
         else:
             params = dict(kwargs)
-            params = convert_datetimes_to_strings(params)
+            params = _strip_null_bytes(convert_datetimes_to_strings(params))
             await self.graph.query(str(query), params)  # type: ignore[reportUnknownArgumentType]
         # Assuming `graph.query` is async (ideal); otherwise, wrap in executor
         return None
@@ -224,7 +242,8 @@ class FalkorDriver(GraphDriver):
         graph = self._get_graph(self._database)
 
         # Convert datetime objects to ISO strings (FalkorDB does not support datetime objects directly)
-        params = convert_datetimes_to_strings(dict(kwargs))
+        # and strip NUL bytes, which FalkorDB's param parser rejects (e.g. in PPTX/PDF-extracted content).
+        params = _strip_null_bytes(convert_datetimes_to_strings(dict(kwargs)))
 
         try:
             result = await graph.query(cypher_query_, params)  # type: ignore[reportUnknownArgumentType]
