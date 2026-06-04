@@ -646,11 +646,27 @@ async def get_episodes(
         )
 
         # Get episodes from the driver directly
+        from graphiti_core.driver.driver import GraphProvider
         from graphiti_core.nodes import EpisodicNode
 
         if effective_group_ids:
+            # FalkorDB stores each group_id in its own graph, and this path calls
+            # the static get_by_group_ids directly (it does not go through the
+            # group-id-routing decorator that client.search_/search use). Route
+            # the driver to the requested group's graph for the single-group case,
+            # otherwise the read hits whatever graph the last write left the
+            # shared driver on. Cross-graph (multi-group) reads aren't supported
+            # in one FalkorDB query, so leave those on the default driver.
+            driver = client.driver
+            if (
+                driver.provider == GraphProvider.FALKORDB
+                and len(set(effective_group_ids)) == 1
+                and effective_group_ids[0] != driver._database
+            ):
+                driver = driver.clone(database=effective_group_ids[0])
+
             episodes = await EpisodicNode.get_by_group_ids(
-                client.driver, effective_group_ids, limit=max_episodes
+                driver, effective_group_ids, limit=max_episodes
             )
         else:
             # If no group IDs, we need to use a different approach

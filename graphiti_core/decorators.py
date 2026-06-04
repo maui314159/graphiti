@@ -28,8 +28,18 @@ F = TypeVar('F', bound=Callable[..., Awaitable[Any]])
 
 def handle_multiple_group_ids(func: F) -> F:
     """
-    Decorator for FalkorDB methods that need to handle multiple group_ids.
-    Runs the function for each group_id separately and merges results.
+    Decorator for FalkorDB methods that operate on group_id-scoped graphs.
+    Runs the wrapped function once per group_id against a driver cloned to that
+    group's graph (FalkorDB stores each group_id in its own graph), then merges
+    the results.
+
+    This applies to single-group calls too, not just multi-group: writes clone
+    the shared driver to database=group_id (see Graphiti.add_episode), so a read
+    that does NOT re-clone would run against whatever graph the last write left
+    the shared driver on (or the configured default), silently returning empty.
+    Routing every group_id-scoped read through the per-group clone keeps reads
+    consistent with writes. Calls with no group_ids fall through to normal
+    execution on the default database.
     """
 
     @functools.wraps(func)
@@ -44,13 +54,15 @@ def handle_multiple_group_ids(func: F) -> F:
         if group_ids is None and group_ids_pos is not None and len(args) > group_ids_pos:
             group_ids = args[group_ids_pos]
 
-        # Only handle FalkorDB with multiple group_ids
+        # Route every group_id-scoped FalkorDB call (single OR multiple) to its
+        # own graph. Single-group must be routed too: otherwise the read runs on
+        # whatever graph the last write left the shared driver on. See docstring.
         if (
             hasattr(self, 'clients')
             and hasattr(self.clients, 'driver')
             and self.clients.driver.provider == GraphProvider.FALKORDB
             and group_ids
-            and len(group_ids) > 1
+            and len(group_ids) >= 1
         ):
             # Execute for each group_id concurrently
             driver = self.clients.driver
