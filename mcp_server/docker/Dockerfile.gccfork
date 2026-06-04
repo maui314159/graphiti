@@ -33,29 +33,23 @@ ENV UV_COMPILE_BYTECODE=1 \
 # Set up MCP server directory
 WORKDIR /app/mcp
 
-# Accept graphiti-core version as build argument
-ARG GRAPHITI_CORE_VERSION=0.28.1
+# Install graphiti-core from THIS fork instead of PyPI, pinned to a full commit
+# SHA inside pyproject.gccfork.toml, using a committed fully-resolved lockfile
+# (uv.lock.gccfork) so rebuilds are deterministic — transitive deps do not float.
+# To bump: edit pyproject.gccfork.toml, run `uv lock` to refresh uv.lock.gccfork,
+# commit both. (Base Dockerfile's GRAPHITI_CORE_VERSION build-arg path is unused
+# here; the pin lives in the lockfile.)
+COPY pyproject.gccfork.toml ./pyproject.toml
+COPY uv.lock.gccfork ./uv.lock
 
-# Copy project files for dependency installation
-COPY pyproject.toml uv.lock ./
-
-# Remove the local path override for graphiti-core in Docker builds
-# and regenerate lock file to match the PyPI version
-ARG GRAPHITI_CORE_GIT_REF=93ff33c2967290f48f9a6ce701136b6a15215e9a
-RUN sed -i '/\[tool\.uv\.sources\]/,/graphiti-core/d' pyproject.toml && \
-    sed -i "s|\"graphiti-core\[falkordb\][^\"]*\"|\"graphiti-core[falkordb] @ git+https://github.com/maui314159/graphiti.git@${GRAPHITI_CORE_GIT_REF}\"|" pyproject.toml && \
-    echo "=== graphiti-core pinned to fork @ ${GRAPHITI_CORE_GIT_REF} ===" && grep graphiti-core pyproject.toml && \
-    rm -f uv.lock && \
-    uv lock
-
-# Install Python dependencies (exclude dev dependency group)
-# Include optional provider extras so the image matches the providers
-# advertised by the MCP server configuration and docs.
+# Install Python dependencies from the committed lock without re-resolving.
+# --frozen: error rather than silently update uv.lock. Exclude dev group; include
+# provider extras so the image matches the MCP server config/docs.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-group dev --extra providers --extra azure
+    uv sync --frozen --no-group dev --extra providers --extra azure
 
-# Store graphiti-core version
-RUN echo "${GRAPHITI_CORE_VERSION}" > /app/mcp/.graphiti-core-version
+# Store graphiti-core source ref (informational)
+RUN echo "fork@e92a7708dd43d09c235c11f2842ebc8209b3413a" > /app/mcp/.graphiti-core-version
 
 # Copy MCP server application code
 COPY main.py ./
