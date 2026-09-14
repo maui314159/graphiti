@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-group dev --extra providers --extra azure
 
 # Store graphiti-core source ref (informational)
-RUN echo "fork@e92a7708dd43d09c235c11f2842ebc8209b3413a" > /app/mcp/.graphiti-core-version
+RUN echo "fork@6f5e126149753c33371f50d2317961795f33df80" > /app/mcp/.graphiti-core-version
 
 # Copy MCP server application code
 COPY main.py ./
@@ -118,7 +118,7 @@ LABEL org.opencontainers.image.title="FalkorDB + Graphiti MCP Server" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.vendor="Zep AI" \
       org.opencontainers.image.source="https://github.com/zep-ai/graphiti" \
-      graphiti.core.version="fork@e92a7708dd43d09c235c11f2842ebc8209b3413a"
+      graphiti.core.version="fork@6f5e126149753c33371f50d2317961795f33df80"
 
 # Expose ports
 EXPOSE 6379 3000 8000
